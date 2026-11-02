@@ -155,7 +155,7 @@ Standard SAP OData V4 services require stateful session affinity and CSRF valida
 
 $$\text{TokenAge} = \text{CurrentEpoch} - \text{CachedTimestamp}$$
 
-$$\text{Action} = \begin{cases} \text{Inject Cached Token \& Cookie}, & \text{if } \text{TokenAge} < 1500\text{ seconds} \\ \text{Trigger Fetch Subprocess \& Refresh Cache}, & \text{if } \text{TokenAge} \ge 1500\text{ seconds or Null} \end{cases}$$
+$$\text{Resolution} = \begin{cases} \text{Inject Active Token and Session Cookie}, & \text{if } \text{TokenAge} < 1500\text{ seconds} \\ \text{Execute Fetch Subprocess and Populate Cache}, & \text{if } \text{TokenAge} \ge 1500\text{ seconds} \end{cases}$$
 
 By decoupling token fetching from transactional execution, 99% of steady-state orders reuse active HTTP session cookies and CSRF tokens, cutting network latency by more than half.
 
@@ -216,5 +216,5 @@ sap-cpi-o2c-apimesh-cleancore/
 ## Author
 
 **Željko Popov**  
-SAP Integration Architect
+SAP Integration Architect & Lead  
 Certified Boomi Integration Architect | SAP Integration Suite Specialist
