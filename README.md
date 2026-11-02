@@ -5,12 +5,13 @@
 ![Security](https://img.shields.io/badge/Security-Zero--Trust%20mTLS%201.3%20%7C%20Principal%20Propagation-green.svg)
 ![Compliance](https://img.shields.io/badge/Governance-Clean%20Core%20In--App%20Extensibility-blueviolet.svg)
 ![Resilience](https://img.shields.io/badge/Resilience-Distributed%20Idempotency%20%7C%20Global%20CSRF%20Cache-critical.svg)
+![Observability](https://img.shields.io/badge/Observability-OpenTelemetry%20%7C%20SAP%20Cloud%20ALM-purple.svg)
 
 ## Executive Summary
 
-This enterprise integration architecture establishes a mission-critical, low-latency, and resilient Order-to-Cash (O2C) synchronous gateway bridging omni-channel frontends (Salesforce CRM, Headless E-Commerce) with SAP S/4HANA Cloud / Private Edition.
+This enterprise integration architecture establishes a mission-critical, low-latency, and resilient Order-to-Cash (O2C) synchronous gateway bridging omni-channel frontends (Salesforce CRM, Headless E-Commerce Storefronts) with SAP S/4HANA Cloud / Private Edition.
 
-Governed strictly by **SAP Clean Core Guidelines**, the architecture decouples client ingestion from enterprise ledger updates. By combining edge traffic governance via SAP API Management (APIM), a distributed idempotency lock engine, global CSRF token/session caching, and short-lived identity propagation, the system eliminates traditional ERP contention, guarantees sub-300ms SLA during flash retail events (e.g., Black Friday), and preserves 100% auditability down to the individual business caller without custom ABAP modifications.
+Governed strictly by **SAP's Clean Core Paradigm**, the architecture decouples client ingestion from enterprise ledger updates. By combining perimeter traffic governance via SAP API Management (APIM), a distributed idempotency lock engine, global in-memory CSRF token/session caching, and short-lived identity propagation, the system eliminates ERP resource contention, sustains sub-300ms p95 SLA during flash retail events (e.g., Black Friday), and guarantees 100% auditability down to the individual business caller without custom ABAP modifications.
 
 ---
 
