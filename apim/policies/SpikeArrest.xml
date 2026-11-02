@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<SpikeArrest async="false" continueOnError="false" enabled="true" name="Spike-Arrest-Protection">
+    <DisplayName>Spike Arrest - Rate Limiting</DisplayName>
+    <Rate>50pm</Rate>
+    <UseEffectiveParamNames>true</UseEffectiveParamNames>
+</SpikeArrest>

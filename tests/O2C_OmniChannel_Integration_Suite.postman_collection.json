@@ -1,0 +1,26 @@
+{
+  "info": {
+    "name": "Omni-Channel O2C API Mesh Test Suite",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "POST /retail/v1/orders (Sync Sales Order)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Idempotency-Key", "value": "ORD-TEST-2026-001" },
+          { "key": "X-Correlation-ID", "value": "TRACE-SALESFORCE-9901" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"SalesOrderType\": \"OR\",\n  \"SalesOrganization\": \"1010\",\n  \"DistributionChannel\": \"10\",\n  \"OrganizationDivision\": \"00\",\n  \"SoldToParty\": \"10100001\",\n  \"PurchaseOrderByCustomer\": \"PO-TEST-001\",\n  \"LoyaltyPoints\": 150,\n  \"to_Item\": [\n    {\n      \"Material\": \"TG11\",\n      \"RequestedQuantity\": \"5\",\n      \"RequestedQuantityUnit\": \"PCE\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "https://integration-suite-eu10.test02.apimanagement.eu10.hana.ondemand.com:443/retail/v1/orders"
+        }
+      }
+    }
+  ]
+}
