@@ -10,7 +10,7 @@
 
 This enterprise integration architecture establishes a mission-critical, low-latency, and resilient Order-to-Cash (O2C) synchronous gateway bridging omni-channel frontends (Salesforce CRM, Headless E-Commerce) with SAP S/4HANA Cloud / Private Edition.
 
-Governed strictly by **SAP's Clean Core Paradigm**, the architecture decouples client ingestion from enterprise ledger updates. By combining edge traffic governance via SAP API Management (APIM), a distributed idempotency lock engine, global CSRF token/session caching, and short-lived identity propagation, the system eliminates traditional ERP contention, guarantees sub-300ms SLA during flash retail events (e.g., Black Friday), and preserves 100% auditability down to the individual business caller without custom ABAP modifications.
+Governed strictly by **SAP Clean Core Guidelines**, the architecture decouples client ingestion from enterprise ledger updates. By combining edge traffic governance via SAP API Management (APIM), a distributed idempotency lock engine, global CSRF token/session caching, and short-lived identity propagation, the system eliminates traditional ERP contention, guarantees sub-300ms SLA during flash retail events (e.g., Black Friday), and preserves 100% auditability down to the individual business caller without custom ABAP modifications.
 
 ---
 
