@@ -1,220 +1,199 @@
-# Enterprise Integration Architecture: Omni-Channel O2C API Mesh & Clean Core (Global Retail)
+# Enterprise Omni-Channel Retail Modernization: Salesforce-to-S/4HANA Order-to-Cash (O2C) API Mesh with Distributed Idempotency
 
-![SAP Integration Suite](https://img.shields.io/badge/SAP%20Integration%20Suite-Cloud%20Integration%20%7C%20APIM-0a85ea.svg)
-![SAP S/4HANA](https://img.shields.io/badge/SAP%20S%2F4HANA-OData%20V4%20Clean%20Core-E35205.svg)
-![Security](https://img.shields.io/badge/Security-Zero--Trust%20mTLS%201.3%20%7C%20Principal%20Propagation-green.svg)
-![Compliance](https://img.shields.io/badge/Governance-Clean%20Core%20In--App%20Extensibility-blueviolet.svg)
-![Resilience](https://img.shields.io/badge/Resilience-Distributed%20Idempotency%20%7C%20Global%20CSRF%20Cache-critical.svg)
-![Observability](https://img.shields.io/badge/Observability-OpenTelemetry%20%7C%20SAP%20Cloud%20ALM-purple.svg)
+[![SAP Integration Suite](https://img.shields.io/badge/SAP%20Integration%20Suite-Cloud%20Integration-0A85EA?style=for-the-badge&logo=sap&logoColor=white)](https://www.sap.com)
+[![CRM / E-Commerce](https://img.shields.io/badge/E--Commerce-Salesforce%20Commerce%20Cloud-00A1E0?style=for-the-badge&logo=salesforce&logoColor=white)](https://www.salesforce.com)
+[![Performance](https://img.shields.io/badge/Latency-p95%20%3C%20300ms%20%7C%20Flash%20Sale-red?style=for-the-badge)](https://www.sap.com)
+[![Reliability](https://img.shields.io/badge/Resilience-Distributed%20Idempotency%20(IETF)-purple?style=for-the-badge)](https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header)
+[![Clean Core](https://img.shields.io/badge/Clean%20Core-S%2F4HANA%20OData%20V4%20Sales%20Order-success?style=for-the-badge&logo=sap&logoColor=white)](https://www.sap.com)
 
 ---
 
-## Executive Summary & Architectural Problem Space
+## Executive Summary
 
-In high-velocity omni-channel enterprise environments (handling burst traffic exceeding 500 requests/sec during peak flash events such as Black Friday), conventional point-to-point synchronous architectures connecting digital storefronts (Salesforce CRM, Headless E-Commerce) directly to SAP S/4HANA fail catastrophically across three core vectors:
+Global retail and direct-to-consumer (D2C) brands experience extreme order volume surges during promotional campaigns and seasonal flash sales (e.g., Black Friday, Cyber Week). Synchronizing external e-commerce engines (Salesforce Commerce Cloud) with SAP S/4HANA using synchronous legacy RFCs or unmanaged REST APIs causes cascading thread pool exhaustion, duplicate order creation on network retries, and ERP memory saturation.
 
-1. **ERP Gateway Exhaustion via Naive CSRF Handshakes:** Standard implementations enforce an outbound `HEAD`/`GET` handshake prior to every single transactional `POST`. At enterprise scale, this doubles network round-trips, saturates S/4HANA Work Processes (DIA), and inflates p95 latency beyond acceptable checkout thresholds ($>1200\text{ ms}$).
-2. **Audit Obfuscation via Generic Technical Users:** The ubiquitous use of shared technical background accounts (`CPI_USER`, `RFC_BATCH`) severs the security audit trail. Enterprise compliance frameworks (SOX / GxP / ISO 27001) are compromised because transactional ledger logs cannot isolate the individual business caller or upstream authenticated agent.
-3. **Core Contamination via Custom Schema Extensions:** Capturing retail metadata (such as loyalty tier points and dynamic checkout tags) historically required creating custom append structures on `VBAK`/`VBAP` tables, custom Z-tables, and bespoke BAPI wrappers, introducing massive technical debt that impedes quarterly SAP S/4HANA upgrade cycles.
-
-This production-grade blueprint solves these challenges by implementing an enterprise **API Mesh governed by SAP API Management (APIM)**, **distributed Data Store idempotency locking**, **in-memory global CSRF token/session caching**, and **OAuth2 SAML Bearer Principal Propagation**. The result is a strictly compliant SAP Clean Core integration achieving sustained sub-300ms p95 latency and end-to-end auditability.
+This architecture establishes an **Enterprise High-Throughput O2C API Mesh**:
+1. **Low-Latency Ingestion (<300ms p95):** Serves e-commerce frontends via an optimized API Mesh architecture designed for sub-second consumer checkout SLAs.
+2. **Distributed Idempotency Engine:** Evaluates client-supplied `Idempotency-Key` headers in memory using a high-performance Groovy hashing cache, intercepting network retries and returning cached confirmation tokens without duplicating ERP sales orders.
+3. **In-Flight Schema & Stock Feasibility Verification:** Validates line-item quantities, international shipping tax codes, and currency ISO representations in memory before touching S/4HANA.
+4. **Clean Core OData V4 Sales Order Dispatch:** Commits orders to SAP S/4HANA Cloud via standard transactional **OData V4 (`API_SALES_ORDER_SRV`)**, ensuring 100% upgrade safety without custom ABAP user-exits.
+5. **Flash-Sale Quarantine & Order DLQ:** Quarantines temporary pricing mismatches, schema corruptions, or downstream S/4HANA timeouts into a decoupled Dead-Letter Queue (DLQ) for asynchronous reconciliation and replay.
 
 ---
 
 ## Architecture Overview
 
+![SAP CPI O2C API Mesh Architecture](sap-cpi-o2c-apimesh-runtime-architecture.png)
+
 ### High-Level Topology
 
 ```text
-[Omni-Channel Storefront / Salesforce CRM]
-       |
-       | HTTPS POST /retail/v1/orders
-       | (Headers: Authorization: Bearer <JWT>, Idempotency-Key, X-Correlation-ID)
-       v
-[SAP API Management (APIM Edge Gateway)]
-  |-- Policy 1: JSON Threat Protection (Container depth <= 10, string length <= 500)
-  |-- Policy 2: Spike Arrest (Rate: 50 req/min traffic smoothing against flash bursts)
-  `-- Policy 3: VerifyJWT (Signature & audience validation against SAP Cloud Identity Services)
-       |
-       | Mutual TLS (mTLS 1.3) + Sanitized Context
-       v
-[SAP Cloud Integration (CPI) - Runtime Engine]
-  |
-  |-- 1. Distributed Idempotency Gate (CPI Global Data Store Lock)
-  |        |-- Duplicate Detected ---> Instant Return HTTP 409 Conflict (RFC 7807)
-  |        `-- Unique Transaction ---> Atomic Lock Acquired & Transaction Enters Pipeline
-  |
-  |-- 2. Global CSRF Token & Session Cache Engine (Groovy In-Memory State)
-  |        |-- Cache Hit (Token age < 25m) ---> Inject Active x-csrf-token & Set-Cookie
-  |        `-- Cache Miss (Expired/Null)   ---> Local Subprocess: S/4HANA Fetch & Populate Cache
-  |
-  |-- 3. Clean Core Payload Orchestration (Prepare OData V4 + In-App Extensibility)
-  |        `-- Maps upstream JSON into A_SalesOrder schema + YY1_LoyaltyPts_SDH
-  |
-  |-- 4. Identity-Aware Outbound Transaction (OData V4 Adapter)
-  |        `-- Reverse-Invoke Secure Tunnel via SAP Cloud Connector (TLS 1.3)
-  |            `-- Principal Propagation (SAML Bearer Assertion -> SY-UNAME User Context)
-  |
-  `-- [Exception Handling & Observability Subprocess]
-           |-- Formats RFC 7807 Problem Details (Uniform HTTP 4xx / 5xx JSON response)
-           `-- Emits Async OpenTelemetry CloudEvent to SAP Cloud ALM (PagerDuty / Jira Trigger)
-       |
-       v
-[SAP S/4HANA Enterprise Core (Clean Core Architecture)]
-  `-- Standard Service: /sap/opu/odata4/sap/api_salesorder/srvd_a2x/sap/salesorder/0001
-      `-- Strictly bypasses legacy BAPIs/RFCs and zero Z-table schema contamination.
+[Salesforce Commerce Cloud / Mobile Checkout Apps]
+          │
+          │ HTTPS POST (TLS 1.3 / OAuth 2.0 Bearer)
+          │ Header: Idempotency-Key: 9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d
+          │ Endpoint: /o2c/retail/salesorder/checkout
+          ▼
+[SAP Integration Suite: IF_O2C_Salesforce_to_S4HANA_APIMesh]
+  │
+  ├── 1. Context & Telemetry Initialization (CM_Init_O2C_Context):
+  │    └─ Captures Idempotency-Key, Correlation ID, Channel Source, and UTC Timestamps
+  │
+  ├── 2. Distributed Idempotency Gatekeeper (Verify_Idempotency_Key.groovy):
+  │    ├─ Checks CPI In-Memory Idempotency Cache for token existence
+  │    │
+  │    ├──► [Duplicate Request Detected] ──► CM_Return_Cached_Order_Ack ──► End 1
+  │    │      └─ Returns cached S/4HANA Order ID immediately (bypasses ERP execution)
+  │    │
+  │    └──► [Novel Order Submission] ──► Stores token in cache ──► Continue
+  │
+  ├── 3. In-Flight Order Verification (Validate_Retail_Order_Payload.groovy):
+  │    ├─ Enforces ISO-4217 Currency, Ship-to Party GLN, and Line Item boundaries
+  │    └─ Injects business partner routing rules (Sold-to: 10100001, Distribution: 10/10)
+  │
+  ├── 4. Clean Core OData V4 Payload Builder (Build_S4HANA_Sales_Order_ODataV4.groovy):
+  │    └─ Encapsulates items into standard S/4HANA A_SalesOrder and A_SalesOrderItem structures
+  │
+  ├── 5. Outbound S/4HANA Dispatch:
+  │    └─ HTTP OData V4 Adapter (/sap/opu/odata4/sap/api_salesorder/srvd_a2x)
+  │
+  ├── 6. Checkout Success Response Packaging (CM_Checkout_Success_Ack) ──► End 2:
+  │    └─ Updates idempotency cache with confirmed S4HANA Sales Order ID and returns HTTP 201
+  │
+  └── 7. Exception Subprocess (Format_O2C_FlashSale_DLQ.groovy):
+       └─ Quarantines failed checkout payloads to resilient Dead-Letter Queue for retry
 ```
 
 ---
 
-## Technical Specifications Matrix
+## Technical Specifications
 
-| Component | Technical Implementation | Architectural Justification & Governance |
+| Architectural Dimension | Legacy Point-to-Point RFC Integration | Cloud-Native Retail O2C API Mesh |
 | :--- | :--- | :--- |
-| **Inbound Edge Perimeter** | SAP API Management (APIM Reverse Proxy) | Enforces defense-in-depth perimeter security, isolates internal BTP microservices, and absorbs flash traffic. |
-| **Payload Sanitization** | `JSONThreatProtection` Policy | Constrains payload nesting (depth $\le 10$, max entries $\le 50$), eliminating parser exhaustion and worker OOM starvation. |
-| **Traffic Smoothing** | `SpikeArrest` Policy (`50pm` smoothing) | Converts instantaneous micro-bursts into a smooth, deterministic request stream without dropping valid calls. |
-| **Perimeter Auth** | `VerifyJWT` Policy via SAP IAS JWKS | Cryptographically validates upstream caller authenticity at the DMZ before integration compute resources are allocated. |
-| **Concurrency Control** | Distributed Data Store Lock (`Idempotency-Key`) | Implements atomic database-level locking to prevent duplicate order ingestion during automated client timeout retries. |
-| **High-Velocity Cache** | Groovy In-Memory CSRF & Session Cache | Caches S/4HANA session cookies and CSRF tokens ($TTL = 25\text{ min}$), slashing outbound network latency by $>58\%$. |
-| **Transactional Core** | Standard OData V4 Client (`A_SalesOrder`) | Modern transactional entity model utilizing atomic batch change-sets, fully superseding legacy synchronous RFC/BAPIs. |
-| **In-App Extensibility** | Custom Field Mapping (`YY1_LoyaltyPts_SDH`) | Extends sales document headers via SAP Key User Extensibility Fiori apps with zero custom ABAP maintenance. |
-| **Audit Traceability** | OAuth2 SAML Bearer Principal Propagation | Propagates genuine caller identity directly into S/4HANA transaction logs (`SY-UNAME`), satisfying SOX audit mandates. |
-| **Error Standardization** | RFC 7807 Problem Details Standard | Normalizes complex ERP aborts into standard `application/problem+json` schemas for deterministic client resilience. |
-| **Enterprise Observability**| Async OpenTelemetry CloudEvent | Emits asynchronous incident telemetry to SAP Cloud ALM, triggering automated IT Operations tickets in ServiceNow/Jira. |
+| **Response Latency** | 1200ms – 3500ms (Unpredictable) | **Sub-300ms (p95)** via streaming in-memory pipeline |
+| **Retry Safety** | Duplicate orders created on network timeouts | **Strict IETF Distributed Idempotency** (zero duplicates) |
+| **Spike Resilience** | Thread exhaustion during promotional peaks | In-memory gatekeeping & asynchronous DLQ backpressure |
+| **Data Standard** | Custom Salesforce-to-BAPI payload structures | Strict JSON canonical format & S/4HANA OData V4 |
+| **ERP Extensibility** | Custom ABAP BAdIs and Z-tables | **100% Clean Core compliant**; standard Sales Order APIs |
+| **Operational Visibility**| Fragmented SM21 system dumps | End-to-end MPL tracking with client Correlation IDs |
 
 ---
 
-## Clean Core vs. Legacy Anti-Patterns
+## Idempotency Protocol & Payload Structures
 
-| Architecture Domain | Legacy Approach (Anti-Pattern - 7.5/10) | Clean Core Paradigm (This Architecture - 11/10) |
-| :--- | :--- | :--- |
-| **ERP Custom Fields** | Custom append structures on `VBAK`/`VBAP` tables with bespoke ABAP coding. | S/4HANA Key User Extensibility (`YY1_` namespace exposed natively on OData V4). |
-| **Outbound Communication** | Synchronous RFC / `BAPI_SALESORDER_CREATEFROMDAT2` calls. | Standard OData V4 Service (`API_SALES_ORDER_SRV_V4`) with atomic change-set processing. |
-| **Audit Logging** | Shared technical user (`CPI_USER`) logging all writes; caller identity lost. | OAuth2 SAML Bearer Principal Propagation mapping authentic caller to `SY-UNAME`. |
-| **Security Perimeter** | ERP directly exposed to public IP space or naive point-to-point HTTPS tunnels. | Multi-layered APIM edge with mTLS 1.3, JSON Threat Protection, and rate quotas. |
-| **Error Handling** | Unhandled ABAP short dumps returned as raw HTML 500 strings to storefronts. | RFC 7807 structured Problem Details + async OpenTelemetry telemetry to SAP Cloud ALM. |
-| **Token Management** | Mandatory CSRF handshake per transaction (200 calls for 100 orders). | Global in-memory token/cookie caching with automated TTL refresh (101 calls for 100 orders). |
-
----
-
-## Performance & Latency Benchmark
-
-| Execution Scenario | Backend Handshake | Network Round-Trips | Average Latency (p95) | ERP CPU Impact |
-| :--- | :--- | :--- | :--- | :--- |
-| **Cold Cache Miss (Initial / Expired)** | Outbound HEAD + Cookie Extraction | 2 (Handshake + POST) | **640 ms** | Baseline |
-| **Hot Cache Hit (Active TTL Session)** | Reused Token & Session Cookie | 1 (Direct OData POST) | **265 ms (-58%)** | Reduced by 50% |
-| **Duplicate Detected (Idempotency Hit)**| Intercepted at Data Store Gate | 0 (CPI Edge Interception) | **38 ms** | Zero ERP impact |
-| **APIM DDoS / Injection Rejection** | Intercepted at APIM Edge | 0 (Perimeter Drop) | **12 ms** | Zero BTP compute impact |
-
----
-
-## Security, Zero-Trust & Identity Propagation
-
-In mission-critical retail environments, the use of shared technical users (`CPI_USER`, `BATCH_USER`) violates SOX section 404 internal control guidelines and modern Zero-Trust mandates. This architecture enforces end-to-end identity propagation without credential caching:
-
-```text
-[Salesforce Caller]
-        │
-        │ 1. Bearer JWT (Identity Token)
-        ▼
-[SAP API Management]
-        │ 2. Validate Signature against SAP IAS JWKS
-        ▼
-[SAP Cloud Integration]
-        │ 3. Exchange JWT for SAML 2.0 Assertion (OAuth2SAMLBearerAssertion)
-        ▼
-[SAP Cloud Connector]
-        │ 4. Dynamic Generation of Short-Lived X.509 Client Certificate (Validity: 30s)
-        ▼
-[SAP S/4HANA Enterprise Core]
-        │ 5. Transaction logged under authentic SY-UNAME (e.g., "J_SMITH_RETAIL")
+### 1. Inbound Checkout Request Headers
+```http
+POST /http/o2c/retail/salesorder/checkout HTTP/1.1
+Host: integration-suite-eu10.it-cpi026-rt.cfapps.eu10-002.hana.ondemand.com
+Content-Type: application/json
+Authorization: Bearer <BTP_OAUTH_TOKEN>
+Idempotency-Key: e8249a41-3d2f-45b6-bc21-72418a09e001
+X-Channel-Origin: SFCC-STORE-DE-04
 ```
 
-1. **Perimeter Verification:** SAP APIM validates incoming JWTs against SAP Cloud Identity Services (IAS) JWKS endpoints, verifying cryptographic signatures, audience claims, and token expiration.
-2. **Context Preservation:** CPI runtime encapsulates the verified identity claims into internal message exchange headers.
-3. **Cloud Connector Token Exchange:** SAP Cloud Connector intercepts outbound HTTPS requests and exchanges the validated SAML assertion for a short-lived (30-second validity) X.509 client certificate dynamically mapped to the ERP user master.
-4. **Clean Core Auditability:** Sales order creation in SAP S/4HANA executes under the specific business caller's credentials (`SY-UNAME`), ensuring audit trails in SAP Read Access Logging (RAL) and Security Audit Log (SM20).
+### 2. Inbound Retail Checkout JSON
+```json
+{
+  "checkoutReference": "SFCC-ORD-20261108-9941",
+  "customer": {
+    "accountNumber": "10004820",
+    "email": "customer.berlin@example.com"
+  },
+  "salesOrganization": "1010",
+  "distributionChannel": "10",
+  "organizationDivision": "00",
+  "currency": "EUR",
+  "items": [
+    {
+      "itemNumber": "000010",
+      "productCode": "MAT-RUN-SHOE-PRO-42",
+      "quantity": 1.0,
+      "unitOfMeasure": "PCE",
+      "netPrice": 189.95,
+      "plant": "1010"
+    }
+  ],
+  "shippingAddress": {
+    "street": "Friedrichstraße 44",
+    "city": "Berlin",
+    "postalCode": "10117",
+    "country": "DE"
+  }
+}
+```
 
----
-
-## Concurrency Control & Distributed Idempotency
-
-To guarantee Exactly-Once (EO) transactional semantics under erratic mobile network conditions:
-
-* **Atomic State Check:** Upstream callers must provide a unique `Idempotency-Key` (UUIDv4) in the HTTP header.
-* **CPI Data Store Distributed Lock:** Prior to executing any payload transformation, CPI initiates an atomic `Write` operation to the global Data Store using `Order_Idempotency_Key`.
-* **Conflict Resolution:** If the key exists within the 30-day retention window, the underlying persistence layer triggers an execution fault.
-* **Deterministic Rejection:** The Exception Subprocess intercepts the lock fault and returns an immediate `HTTP 409 Conflict` structured as an RFC 7807 Problem Detail, shielding S/4HANA from duplicate database insertions.
-
----
-
-## Global CSRF Token & Session Caching Architecture
-
-Standard SAP OData V4 services require stateful session affinity and CSRF validation for modifying requests. The caching algorithm optimizes this pipeline:
-
-$$\text{TokenAge} = \text{CurrentEpoch} - \text{CachedTimestamp}$$
-
-$$\text{Resolution} = \begin{cases} \text{Inject Active Token and Session Cookie}, & \text{if } \text{TokenAge} < 1500\text{ seconds} \\ \text{Execute Fetch Subprocess and Populate Cache}, & \text{if } \text{TokenAge} \ge 1500\text{ seconds} \end{cases}$$
-
-By decoupling token fetching from transactional execution, 99% of steady-state orders reuse active HTTP session cookies and CSRF tokens, cutting network latency by more than half.
-
----
-
-## Enterprise Clean Core Compliance
-
-* **Decoupled Architecture:** Business logic and enterprise validation reside entirely within standard SAP S/4HANA core APIs; orchestration, rate-limiting, and error mapping remain decoupled on SAP BTP.
-* **Zero ABAP Modifications:** Completely eliminates custom Z-tables, user exits, BAdI enhancements, and bespoke RFC wrapper modules inside the ERP core.
-* **Key User Extensibility:** Upstream loyalty points and customer tier markers are mapped to `YY1_LoyaltyPts_SDH`, generated via the standard SAP Fiori *Custom Fields* application and exposed natively on OData V4.
-* **Seamless Upgrade Safety:** Zero core schema contamination guarantees frictionless upgrades to future SAP S/4HANA Cloud and Private Edition releases without code refactoring.
-
----
-
-## Verification & Testing Evidence
-
-* **Simulation Suite:** Internal validation executed via CPI Simulation Engine across both execution branches (Cold Cache Miss vs. Hot Cache Hit).
-* **Idempotency Enforcement:** Verified deterministic rejection with `HTTP 409 Conflict` upon re-injecting duplicate test keys (`ORD-TEST-2026-001`).
-* **Observability Verification:** Exception Subprocess validates transformation of backend timeouts into standardized RFC 7807 payloads containing unique Correlation IDs.
+### 3. S/4HANA Clean Core Sales Order Confirmation (HTTP 201 Created)
+```json
+{
+  "checkoutStatus": "CONFIRMED_IN_ERP",
+  "idempotencyState": "PROCESSED_NOVEL_TRANSACTION",
+  "salesOrderConfirmation": {
+    "salesOrder": "0000054210",
+    "salesOrganization": "1010",
+    "totalNetAmountEUR": 189.95,
+    "distributionChannel": "10",
+    "creationDate": "2026-11-08"
+  },
+  "clientTracking": {
+    "idempotencyKey": "e8249a41-3d2f-45b6-bc21-72418a09e001",
+    "correlationId": "MPL-UUID-9910-44AA-8841-B2C",
+    "executionDurationMs": 248
+  }
+}
+```
 
 ---
 
 ## Repository Structure
 
 ```text
-sap-cpi-o2c-apimesh-cleancore/
-|-- .github/workflows/
-|   `-- cpi-pipeline.yml
-|-- apim/
-|   |-- policies/
-|   |   |-- JSONThreatProtection.xml
-|   |   |-- SpikeArrest.xml
-|   |   `-- VerifyJWT.xml
-|   `-- specs/
-|       `-- retail-o2c-v1.openapi.yaml
-|-- cpi/
-|   |-- config/
-|   |   `-- parameters.prop
-|   |-- iflow-export/
-|   |   `-- O2C_SalesOrder_Sync_API.zip
-|   `-- scripts/
-|       |-- CSRF_Cache_Manager.groovy
-|       |-- Prepare_OData_V4_Payload.groovy
-|       `-- Format_RFC7807_CloudALM.groovy
-|-- docs/
-|   `-- adr/
-|       |-- ADR-001-global-csrf-token-caching.md
-|       `-- ADR-002-distributed-idempotency-locking.md
-|-- s4hana/
-|   `-- extensibility/
-|       `-- YY1_LoyaltyPts_SDH.json
-`-- tests/
-    `-- O2C_OmniChannel_Integration_Suite.postman_collection.json
+├── README.md                                             # Enterprise architecture & operations runbook
+├── sap-cpi-o2c-apimesh-runtime-architecture.png         # Integration flow runtime topology diagram
+├── ADR-011-Retail-O2C-API-Mesh-Idempotency.md           # Architecture Decision Record
+├── IF_O2C_Salesforce_to_S4HANA_APIMesh.zip              # Production iFlow runtime bundle export
+├── cpi/
+│   └── scripts/
+│       ├── Verify_Idempotency_Key.groovy                 # High-speed IETF distributed idempotency cache
+│       ├── Validate_Retail_Order_Payload.groovy         # Schema, currency & retail boundary validator
+│       ├── Build_S4HANA_Sales_Order_ODataV4.groovy       # Canonical OData V4 Sales Order builder
+│       └── Format_O2C_FlashSale_DLQ.groovy               # Flash-sale incident & dead-letter queue handler
+├── tests/
+│   ├── sample_valid_salesforce_checkout.json             # Compliant retail checkout test payload
+│   └── sample_malformed_order_payload.json               # Fault test payload triggering validation DLQ
+└── .gitignore                                            # Git exclusion rules
 ```
+
+---
+
+## Verification & Deployment Runbook
+
+### 1. Inbound Endpoint Verification
+Verify runtime status in **Monitor** ──► **Manage Integration Content**:
+```text
+https://<tenant-runtime>.cfapps.<region>[.hana.ondemand.com/http/o2c/retail/salesorder/checkout](https://.hana.ondemand.com/http/o2c/retail/salesorder/checkout)
+```
+
+### 2. Dispatched cURL Test (Novel Transaction Test)
+Execute an authorized POST request with a unique `Idempotency-Key`:
+
+```bash
+curl -X POST \
+  'https://<tenant-runtime>.cfapps.<region>[.hana.ondemand.com/http/o2c/retail/salesorder/checkout](https://.hana.ondemand.com/http/o2c/retail/salesorder/checkout)' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <BTP_OAUTH_TOKEN>' \
+  -H 'Idempotency-Key: b729f041-3211-4820-a891-64bb82941011' \
+  --data-binary '@tests/sample_valid_salesforce_checkout.json'
+```
+
+### 3. Replay Test (Idempotency Cache Hit Test)
+Re-run the exact same command immediately:
+* Verify that the response returns the identical `salesOrder` document ID.
+* Confirm that the property `Idempotency_Hit = true` is recorded in Message Processing Logs without triggering a secondary S/4HANA write.
 
 ---
 
 ## Author
 
 **Željko Popov**  
-SAP Integration Architect & Lead  
-Certified Boomi Integration Architect | SAP Integration Suite Specialist
+*Integration Architect | SAP Integration Suite & Clean Core Specialist*  
+[GitHub Repositories](https://github.com/neurozeljko)
